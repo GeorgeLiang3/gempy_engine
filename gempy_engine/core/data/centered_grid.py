@@ -15,6 +15,10 @@ class CenteredGrid:
     left_voxel_edges: np.ndarray  = field(init=False)
     right_voxel_edges: np.ndarray  = field(init=False)
 
+    #: How the kernel cells grow away from the device: "exponential" (geometric spacing, default) or "optimized"
+    #: (spacing that minimises the spread of the cells' gravity sensitivity tz, see ``kernel_grid_optimization``).
+    kernel_spacing: str = "exponential"
+
     def __len__(self):
         return self.centers.shape[0] * self.kernel_grid_centers.shape[0]
 
@@ -44,13 +48,24 @@ class CenteredGrid:
         Returns:
             None
         """
+        match self.kernel_spacing:
+            case "exponential":
+                unit_radii = None
+            case "optimized":
+                from ...modules.geophysics.kernel_grid_optimization import optimized_unit_radii
+                unit_radii = optimized_unit_radii(grid_resolution, scaling_factor, base_spacing=base_spacing,
+                                                  z_axis_shift=z_axis_shift, z_axis_scale=z_axis_scale)
+            case _:
+                raise ValueError(f"kernel_spacing must be 'exponential' or 'optimized', not {self.kernel_spacing!r}")
+
         self.kernel_grid_centers, self.left_voxel_edges, self.right_voxel_edges = (
                 self.create_irregular_grid_kernel(
                     grid_resolution=grid_resolution,
                     scaling_factor=scaling_factor,
                     base_spacing=base_spacing,
                     z_axis_shift=z_axis_shift,
-                    z_axis_scale=z_axis_scale
+                    z_axis_scale=z_axis_scale,
+                    unit_radii=unit_radii
                 )
         )
 
@@ -63,14 +78,25 @@ class CenteredGrid:
         return values_
 
     @staticmethod
-    def create_irregular_grid_kernel(grid_resolution, scaling_factor, base_spacing=0.01, z_axis_shift=0.05, z_axis_scale=1.2):
+    def create_irregular_grid_kernel(grid_resolution, scaling_factor, base_spacing=0.01, z_axis_shift=0.05, z_axis_scale=1.2,
+                                     unit_radii=None):
+        """Kernel cell centers and half-widths.
+
+        ``unit_radii``, if given, holds for each axis the increasing cell-center distances from the device in units
+        of the radius (ending at 1); by default they are ``geomspace(base_spacing, 1, n)``.
+        """
         if not isinstance(scaling_factor, (list, np.ndarray)):
             scaling_factor = np.repeat(scaling_factor, 3)
 
         coordinates, voxel_sizes = [], []
         for axis_index in range(3):
             points_in_axis = int(grid_resolution[axis_index] // (1 if axis_index == 2 else 2))
-            base_unit_radius = np.geomspace(base_spacing, 1, points_in_axis)
+            if unit_radii is None:
+                base_unit_radius = np.geomspace(base_spacing, 1, points_in_axis)
+            else:
+                base_unit_radius = np.asarray(unit_radii[axis_index], dtype="float64")
+                if base_unit_radius.shape != (points_in_axis,):
+                    raise ValueError(f"unit_radii[{axis_index}] must have {points_in_axis} values.")
 
             if axis_index == 2:  # Z-axis
                 unit_radius_with_zero = np.concatenate((np.zeros(1), base_unit_radius))
